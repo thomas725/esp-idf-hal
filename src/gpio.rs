@@ -1160,7 +1160,7 @@ impl<'d, T: Pin, MODE> PinDriver<'d, T, MODE> {
         // IMPORTANT: MUST be done or else the ESP IDF GPIO driver will continue calling us in a loop
         // - particularly when the interrupt type is set to non-edge triggering (pin high or low) -
         // which will eventually cause the Interrupt WatchDog to kick in
-        gpio_intr_disable(pin as _);
+        // gpio_intr_disable(pin as _);
 
         PIN_NOTIF[pin as usize].notify_lsb();
 
