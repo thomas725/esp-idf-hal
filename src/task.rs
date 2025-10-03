@@ -219,7 +219,7 @@ pub fn get_idle_task(core: crate::cpu::Core) -> TaskHandle_t {
 
 /// Executes the supplied future on the current thread, thus blocking it until the future becomes ready.
 #[cfg(feature = "alloc")]
-pub fn block_on<F>(mut fut: F) -> F::Output
+pub fn block_on<F>(fut: F) -> F::Output
 where
     F: Future,
 {
@@ -351,7 +351,7 @@ pub mod thread {
     }
     #[derive(Debug)]
     pub struct ThreadSpawnConfiguration {
-        pub name: Option<&'static [u8]>,
+        pub name: Option<&'static CStr>,
         pub stack_size: usize,
         pub priority: u8,
         pub inherit: bool,
@@ -383,6 +383,7 @@ pub mod thread {
 
     impl From<&ThreadSpawnConfiguration> for esp_pthread_cfg_t {
         fn from(conf: &ThreadSpawnConfiguration) -> Self {
+            #[allow(clippy::unwrap_or_default)]
             Self {
                 thread_name: conf
                     .name
@@ -394,9 +395,9 @@ pub mod thread {
                 pin_to_core: conf.pin_to_core.map(Into::into).unwrap_or(NO_AFFINITY as _),
                 #[cfg(not(any(
                     esp_idf_version_major = "4",
-                    all(esp_idf_version_major = "5", esp_idf_version_minor = "0"),
-                    all(esp_idf_version_major = "5", esp_idf_version_minor = "1"),
-                    all(esp_idf_version_major = "5", esp_idf_version_minor = "2"),
+                    esp_idf_version = "5.0",
+                    esp_idf_version = "5.1",
+                    esp_idf_version = "5.2",
                 )))] // ESP-IDF 5.3 and later
                 stack_alloc_caps: conf.stack_alloc_caps.as_u32(),
             }
@@ -409,12 +410,7 @@ pub mod thread {
                 name: if conf.thread_name.is_null() {
                     None
                 } else {
-                    Some(unsafe {
-                        core::slice::from_raw_parts(
-                            conf.thread_name as _,
-                            c_strlen(conf.thread_name.cast()) + 1,
-                        )
-                    })
+                    Some(unsafe { CStr::from_ptr(conf.thread_name) })
                 },
                 stack_size: conf.stack_size as _,
                 priority: conf.prio as _,
@@ -452,11 +448,6 @@ pub mod thread {
     }
 
     fn set_conf(conf: &ThreadSpawnConfiguration) -> Result<(), EspError> {
-        if let Some(name) = conf.name {
-            let _str = CStr::from_bytes_with_nul(name)
-                .map_err(|_e| panic! {"Missing null byte in provided Thread-Name"});
-        }
-
         if conf.priority < 1 || conf.priority as u32 >= configMAX_PRIORITIES {
             panic!("Thread priority {} has to be [1 - 24]", conf.priority);
         }
@@ -464,18 +455,6 @@ pub mod thread {
         esp!(unsafe { esp_pthread_set_cfg(&conf.into()) })?;
 
         Ok(())
-    }
-
-    fn c_strlen(c_str: *const u8) -> usize {
-        let mut offset = 0;
-
-        loop {
-            if *unsafe { c_str.offset(offset).as_ref() }.unwrap() == 0 {
-                return offset as _;
-            }
-
-            offset += 1;
-        }
     }
 }
 
@@ -522,14 +501,12 @@ fn exit(cs: &CriticalSection) {
 impl CriticalSection {
     /// Constructs a new `CriticalSection` instance
     #[inline(always)]
-    #[link_section = ".iram1.cs_new"]
     pub const fn new() -> Self {
         Self(Cell::new(None), AtomicBool::new(false))
     }
 
     #[inline(always)]
-    #[link_section = ".iram1.cs_enter"]
-    pub fn enter(&self) -> CriticalSectionGuard {
+    pub fn enter(&self) -> CriticalSectionGuard<'_> {
         enter(self);
 
         CriticalSectionGuard(self)
@@ -548,7 +525,6 @@ impl Drop for CriticalSection {
 
 impl Default for CriticalSection {
     #[inline(always)]
-    #[link_section = ".iram1.cs_default"]
     fn default() -> Self {
         Self::new()
     }
@@ -561,7 +537,6 @@ pub struct CriticalSectionGuard<'a>(&'a CriticalSection);
 
 impl Drop for CriticalSectionGuard<'_> {
     #[inline(always)]
-    #[link_section = ".iram1.csg_drop"]
     fn drop(&mut self) {
         exit(self.0);
     }
@@ -599,8 +574,6 @@ pub mod watchdog {
     };
 
     use esp_idf_sys::*;
-
-    use crate::peripheral::Peripheral;
 
     pub type TWDTConfig = config::Config;
 
@@ -669,10 +642,7 @@ pub mod watchdog {
     static TWDT_DRIVER_REF_COUNT: AtomicUsize = AtomicUsize::new(0);
 
     impl<'d> TWDTDriver<'d> {
-        pub fn new(
-            _twdt: impl Peripheral<P = TWDT> + 'd,
-            config: &config::Config,
-        ) -> Result<Self, EspError> {
+        pub fn new(_twdt: TWDT<'d>, config: &config::Config) -> Result<Self, EspError> {
             TWDT_DRIVER_REF_COUNT.fetch_add(1, Ordering::SeqCst);
             let init_by_idf = Self::watchdog_is_init_by_idf();
 
@@ -1034,7 +1004,6 @@ pub mod queue {
 
         /// Retrieves the underlying FreeRTOS handle.
         #[inline]
-        #[link_section = "iram1.queue_as_raw"]
         pub fn as_raw(&self) -> sys::QueueHandle_t {
             self.ptr
         }
@@ -1058,7 +1027,6 @@ pub mod queue {
         /// In non-ISR contexts, the function will always return `false`.
         /// In this case the interrupt should call [`crate::task::do_yield`].
         #[inline]
-        #[link_section = "iram1.queue_send_back"]
         pub fn send_back(&self, item: T, timeout: TickType_t) -> Result<bool, EspError> {
             self.send_generic(item, timeout, 0)
         }
@@ -1084,7 +1052,6 @@ pub mod queue {
         /// In non-ISR contexts, the function will always return `false`.
         /// In this case the interrupt should call [`crate::task::do_yield`].
         #[inline]
-        #[link_section = "iram1.queue_send_front"]
         pub fn send_front(&self, item: T, timeout: TickType_t) -> Result<bool, EspError> {
             self.send_generic(item, timeout, 1)
         }
@@ -1109,7 +1076,6 @@ pub mod queue {
         /// In non-ISR contexts, the function will always return `false`.
         /// In this case the interrupt should call [`crate::task::do_yield`].
         #[inline]
-        #[link_section = "iram1.queue_send_generic"]
         fn send_generic(
             &self,
             item: T,
@@ -1162,7 +1128,6 @@ pub mod queue {
         /// In this case the interrupt should call [`crate::task::do_yield`].
         /// In non-ISR contexts, the function will always return `false`.
         #[inline]
-        #[link_section = "iram1.queue_recv_front"]
         pub fn recv_front(&self, timeout: TickType_t) -> Option<(T, bool)> {
             let mut buf = MaybeUninit::uninit();
             let mut hp_task_awoken = false as i32;
@@ -1204,7 +1169,6 @@ pub mod queue {
         /// a higher priority task was awoken since we don't free
         /// up space in the queue and thus cannot unblock anyone.
         #[inline]
-        #[link_section = "iram1.queue_peek_front"]
         pub fn peek_front(&self, timeout: TickType_t) -> Option<T> {
             let mut buf = MaybeUninit::uninit();
 

@@ -56,8 +56,6 @@ use crate::{gpio::*, task};
 use embedded_hal_nb::serial::ErrorKind;
 use esp_idf_sys::*;
 
-use crate::peripheral::Peripheral;
-
 const UART_FIFO_SIZE: usize = SOC_UART_FIFO_LEN as usize;
 
 pub type UartConfig = config::Config;
@@ -737,12 +735,12 @@ pub struct UartTxDriver<'d> {
 
 impl<'d> UartDriver<'d> {
     /// Create a new serial driver
-    pub fn new<UART: Uart>(
-        uart: impl Peripheral<P = UART> + 'd,
-        tx: impl Peripheral<P = impl OutputPin> + 'd,
-        rx: impl Peripheral<P = impl InputPin> + 'd,
-        cts: Option<impl Peripheral<P = impl InputPin> + 'd>,
-        rts: Option<impl Peripheral<P = impl OutputPin> + 'd>,
+    pub fn new<UART: Uart + 'd>(
+        uart: UART,
+        tx: impl OutputPin + 'd,
+        rx: impl InputPin + 'd,
+        cts: Option<impl InputPin + 'd>,
+        rts: Option<impl OutputPin + 'd>,
         config: &config::Config,
     ) -> Result<Self, EspError> {
         let mut q_handle_raw = ptr::null_mut();
@@ -882,6 +880,11 @@ impl<'d> UartDriver<'d> {
     /// Write multiple bytes from a slice
     pub fn write(&self, bytes: &[u8]) -> Result<usize, EspError> {
         self.tx().write(bytes)
+    }
+
+    /// Write multiple bytes from a slice, then send a break condition.
+    pub fn write_with_break(&self, bytes: &[u8], brk_len: i32) -> Result<usize, EspError> {
+        self.tx().write_with_break(bytes, brk_len)
     }
 
     /// Write multiple bytes from a slice directly to the TX FIFO hardware.
@@ -1039,11 +1042,11 @@ impl core::fmt::Write for UartDriver<'_> {
 
 impl<'d> UartRxDriver<'d> {
     /// Create a new serial receiver
-    pub fn new<UART: Uart>(
-        uart: impl Peripheral<P = UART> + 'd,
-        rx: impl Peripheral<P = impl InputPin> + 'd,
-        cts: Option<impl Peripheral<P = impl InputPin> + 'd>,
-        rts: Option<impl Peripheral<P = impl OutputPin> + 'd>,
+    pub fn new<UART: Uart + 'd>(
+        uart: UART,
+        rx: impl InputPin + 'd,
+        cts: Option<impl InputPin + 'd>,
+        rts: Option<impl OutputPin + 'd>,
         config: &config::Config,
     ) -> Result<Self, EspError> {
         let mut q_handle_raw = ptr::null_mut();
@@ -1264,11 +1267,11 @@ impl embedded_hal_nb::serial::Read<u8> for UartRxDriver<'_> {
 
 impl<'d> UartTxDriver<'d> {
     /// Create a new serial transmitter
-    pub fn new<UART: Uart>(
-        uart: impl Peripheral<P = UART> + 'd,
-        tx: impl Peripheral<P = impl OutputPin> + 'd,
-        cts: Option<impl Peripheral<P = impl InputPin> + 'd>,
-        rts: Option<impl Peripheral<P = impl OutputPin> + 'd>,
+    pub fn new<UART: Uart + 'd>(
+        uart: UART,
+        tx: impl OutputPin + 'd,
+        cts: Option<impl InputPin + 'd>,
+        rts: Option<impl OutputPin + 'd>,
         config: &config::Config,
     ) -> Result<Self, EspError> {
         let mut q_handle_raw = ptr::null_mut();
@@ -1358,6 +1361,20 @@ impl<'d> UartTxDriver<'d> {
     pub fn write(&mut self, bytes: &[u8]) -> Result<usize, EspError> {
         // `uart_write_bytes()` returns error (-1) or how many bytes were written
         let len = unsafe { uart_write_bytes(self.port(), bytes.as_ptr().cast(), bytes.len()) };
+
+        if len >= 0 {
+            Ok(len as usize)
+        } else {
+            Err(EspError::from_infallible::<ESP_ERR_INVALID_STATE>())
+        }
+    }
+
+    /// Write multiple bytes from a slice, then send a break condition.
+    pub fn write_with_break(&mut self, bytes: &[u8], brk_len: i32) -> Result<usize, EspError> {
+        // `uart_write_bytes_with_break()` returns error (-1) or how many bytes were written
+        let len = unsafe {
+            uart_write_bytes_with_break(self.port(), bytes.as_ptr().cast(), bytes.len(), brk_len)
+        };
 
         if len >= 0 {
             Ok(len as usize)
@@ -1484,12 +1501,12 @@ where
 }
 
 impl<'d> AsyncUartDriver<'d, UartDriver<'d>> {
-    pub fn new(
-        uart: impl Peripheral<P = impl Uart> + 'd,
-        tx: impl Peripheral<P = impl OutputPin> + 'd,
-        rx: impl Peripheral<P = impl InputPin> + 'd,
-        cts: Option<impl Peripheral<P = impl InputPin> + 'd>,
-        rts: Option<impl Peripheral<P = impl OutputPin> + 'd>,
+    pub fn new<UART: Uart + 'd>(
+        uart: UART,
+        tx: impl OutputPin + 'd,
+        rx: impl InputPin + 'd,
+        cts: Option<impl InputPin + 'd>,
+        rts: Option<impl OutputPin + 'd>,
         config: &config::Config,
     ) -> Result<Self, EspError> {
         Self::wrap(UartDriver::new(uart, tx, rx, cts, rts, config)?)
@@ -1667,11 +1684,11 @@ where
 }
 
 impl<'d> AsyncUartRxDriver<'d, UartRxDriver<'d>> {
-    pub fn new(
-        uart: impl Peripheral<P = impl Uart> + 'd,
-        rx: impl Peripheral<P = impl InputPin> + 'd,
-        cts: Option<impl Peripheral<P = impl InputPin> + 'd>,
-        rts: Option<impl Peripheral<P = impl OutputPin> + 'd>,
+    pub fn new<UART: Uart + 'd>(
+        uart: UART,
+        rx: impl InputPin + 'd,
+        cts: Option<impl InputPin + 'd>,
+        rts: Option<impl OutputPin + 'd>,
         config: &config::Config,
     ) -> Result<Self, EspError> {
         Self::wrap(UartRxDriver::new(uart, rx, cts, rts, config)?)
@@ -1770,11 +1787,11 @@ where
 }
 
 impl<'d> AsyncUartTxDriver<'d, UartTxDriver<'d>> {
-    pub fn new(
-        uart: impl Peripheral<P = impl Uart> + 'd,
-        tx: impl Peripheral<P = impl OutputPin> + 'd,
-        cts: Option<impl Peripheral<P = impl InputPin> + 'd>,
-        rts: Option<impl Peripheral<P = impl OutputPin> + 'd>,
+    pub fn new<UART: Uart + 'd>(
+        uart: UART,
+        tx: impl OutputPin + 'd,
+        cts: Option<impl InputPin + 'd>,
+        rts: Option<impl OutputPin + 'd>,
         config: &config::Config,
     ) -> Result<Self, EspError> {
         Self::wrap(UartTxDriver::new(uart, tx, cts, rts, config)?)
@@ -1959,35 +1976,49 @@ extern "C" fn process_events(arg: *mut core::ffi::c_void) {
     }
 }
 
-fn new_common<UART: Uart>(
-    _uart: impl Peripheral<P = UART>,
-    tx: Option<impl Peripheral<P = impl OutputPin>>,
-    rx: Option<impl Peripheral<P = impl InputPin>>,
-    cts: Option<impl Peripheral<P = impl InputPin>>,
-    rts: Option<impl Peripheral<P = impl OutputPin>>,
+fn new_common<'d, UART: Uart + 'd>(
+    _uart: UART,
+    tx: Option<impl OutputPin + 'd>,
+    rx: Option<impl InputPin + 'd>,
+    cts: Option<impl InputPin + 'd>,
+    rts: Option<impl OutputPin + 'd>,
     config: &config::Config,
     queue: Option<&mut QueueHandle_t>,
 ) -> Result<(), EspError> {
-    let tx = tx.map(|tx| tx.into_ref());
-    let rx = rx.map(|rx| rx.into_ref());
-    let cts = cts.map(|cts| cts.into_ref());
-    let rts = rts.map(|rts| rts.into_ref());
-
     let uart_config = config.into();
 
     esp!(unsafe { uart_param_config(UART::port(), &uart_config) })?;
 
-    esp!(unsafe {
-        uart_set_pin(
-            UART::port(),
-            tx.as_ref().map_or(-1, |p| p.pin()),
-            rx.as_ref().map_or(-1, |p| p.pin()),
-            rts.as_ref().map_or(-1, |p| p.pin()),
-            cts.as_ref().map_or(-1, |p| p.pin()),
-        )
-    })?;
+    #[cfg(esp_idf_version_at_least_6_0_0)]
+    {
+        esp!(unsafe {
+            _uart_set_pin6(
+                UART::port(),
+                tx.as_ref().map_or(-1, |p| p.pin() as _),
+                rx.as_ref().map_or(-1, |p| p.pin() as _),
+                rts.as_ref().map_or(-1, |p| p.pin() as _),
+                cts.as_ref().map_or(-1, |p| p.pin() as _),
+                -1,
+                -1,
+            )
+        })?;
+    }
+
+    #[cfg(not(esp_idf_version_at_least_6_0_0))]
+    {
+        esp!(unsafe {
+            uart_set_pin(
+                UART::port(),
+                tx.as_ref().map_or(-1, |p| p.pin() as _),
+                rx.as_ref().map_or(-1, |p| p.pin() as _),
+                rts.as_ref().map_or(-1, |p| p.pin() as _),
+                cts.as_ref().map_or(-1, |p| p.pin() as _),
+            )
+        })?;
+    }
 
     esp!(unsafe {
+        #[allow(clippy::unwrap_or_default)]
         uart_driver_install(
             UART::port(),
             if rx.is_some() {
@@ -2111,7 +2142,7 @@ macro_rules! impl_uart {
     ($uart:ident: $port:expr) => {
         crate::impl_peripheral!($uart);
 
-        impl Uart for $uart {
+        impl Uart for $uart<'_> {
             fn port() -> uart_port_t {
                 $port
             }

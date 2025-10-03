@@ -516,9 +516,9 @@ pub trait I2s: Send + sealed::Sealed {
 mod sealed {
     pub trait Sealed {}
 
-    impl Sealed for super::I2S0 {}
+    impl Sealed for super::I2S0<'_> {}
     #[cfg(any(esp32, esp32s3))]
-    impl Sealed for super::I2S1 {}
+    impl Sealed for super::I2S1<'_> {}
 }
 
 pub trait I2sPort {
@@ -760,7 +760,7 @@ impl<Dir> I2sDriver<'_, Dir> {
     }
 
     /// Borrow the I2S driver by a reference
-    pub fn as_ref(&mut self) -> I2sDriverRef<Dir> {
+    pub fn as_ref(&mut self) -> I2sDriverRef<'_, Dir> {
         I2sDriverRef(unsafe { NonNull::new_unchecked(self) })
     }
 }
@@ -1222,7 +1222,7 @@ impl I2sDriver<'_, I2sBiDir> {
     /// It is safe to use the two parts separately
     /// - esp-idf guarantees thread safety
     /// - esp-idf-hal guarantees asynchronous safety
-    pub fn split(&mut self) -> (I2sDriverRef<I2sRx>, I2sDriverRef<I2sTx>) {
+    pub fn split(&mut self) -> (I2sDriverRef<'_, I2sRx>, I2sDriverRef<'_, I2sTx>) {
         // Safe because self cannot be null
         let this = unsafe { NonNull::new_unchecked(self) };
 
@@ -1352,7 +1352,7 @@ macro_rules! impl_i2s {
     ($i2s:ident: $port:expr) => {
         crate::impl_peripheral!($i2s);
 
-        impl I2s for $i2s {
+        impl I2s for $i2s<'_> {
             #[inline(always)]
             fn port() -> i2s_port_t {
                 $port

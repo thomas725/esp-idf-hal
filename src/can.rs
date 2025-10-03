@@ -41,12 +41,9 @@ use enumset::{EnumSet, EnumSetType};
 
 use esp_idf_sys::*;
 
-use num_enum::TryFromPrimitive;
-
 use crate::cpu::Core;
 use crate::delay::{self, BLOCK, NON_BLOCK};
 use crate::interrupt::InterruptType;
-use crate::peripheral::{Peripheral, PeripheralRef};
 use crate::task::asynch::Notification;
 use crate::{gpio::*, task};
 
@@ -69,13 +66,14 @@ pub mod config {
     use super::Alert;
 
     /// CAN timing
-    #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+    #[derive(Default, Debug, Copy, Clone, Eq, PartialEq, Hash)]
     pub enum Timing {
         B25K,
         B50K,
         B100K,
         B125K,
         B250K,
+        #[default]
         B500K,
         B800K,
         B1M,
@@ -159,33 +157,10 @@ pub mod config {
                     tseg_1: timing_segment_1,
                     tseg_2: timing_segment_2,
                     sjw: synchronization_jump_width,
-                    #[cfg(any(
-                        esp_idf_version_major = "4",
-                        esp_idf_version = "5.0",
-                        esp_idf_version = "5.1",
-                        esp_idf_version = "5.2",
-                        esp_idf_version = "5.3",
-                        esp_idf_version = "5.4"
-                    ))]
                     triple_sampling,
-                    #[cfg(not(any(
-                        esp_idf_version_major = "4",
-                        esp_idf_version = "5.0",
-                        esp_idf_version = "5.1",
-                        esp_idf_version = "5.2",
-                        esp_idf_version = "5.3",
-                        esp_idf_version = "5.4"
-                    )))]
-                    __bindgen_anon_1: twai_timing_config_t__bindgen_ty_1 { triple_sampling },
                     ..Default::default()
                 },
             }
-        }
-    }
-
-    impl Default for Timing {
-        fn default() -> Self {
-            Self::B500K
         }
     }
 
@@ -235,7 +210,7 @@ pub mod config {
     /// let mask   = 0x7F0;
     /// let f = Filter::Standard { filter, mask };
     /// ```
-    #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+    #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
     pub enum Filter {
         /// Filter for 11 bit standard CAN IDs
         Standard { filter: u16, mask: u16 },
@@ -252,12 +227,12 @@ pub mod config {
 
     impl Filter {
         /// Filter that allows all standard CAN IDs.
-        pub fn standard_allow_all() -> Self {
+        pub const fn standard_allow_all() -> Self {
             Self::Standard { filter: 0, mask: 0 }
         }
 
         /// Filter that accepts all extended CAN IDs.
-        pub fn extended_allow_all() -> Self {
+        pub const fn extended_allow_all() -> Self {
             Self::Extended { filter: 0, mask: 0 }
         }
     }
@@ -268,7 +243,7 @@ pub mod config {
         }
     }
 
-    #[derive(Debug, Copy, Clone, Default)]
+    #[derive(Debug, Copy, Clone, Default, Eq, PartialEq, Hash)]
     pub enum Mode {
         #[default]
         Normal,
@@ -360,47 +335,63 @@ pub mod config {
     }
 }
 
-#[derive(Debug, EnumSetType, TryFromPrimitive)]
+#[derive(Debug, EnumSetType)]
 #[enumset(repr = "u32")]
 #[repr(u32)]
 pub enum Alert {
-    TransmitIdle = 1,
-    Success = 2,
-    Received = 3,
-    BelowErrorWarning = 4,
-    ActiveError = 5,
-    RecoveryInProgress = 6,
-    BusRecovered = 7,
-    ArbLost = 8,
-    AboveErrorWarning = 9,
-    BusError = 10,
-    TransmitFailed = 11,
-    ReceiveQueueFull = 12,
-    ErrorPass = 13,
-    BusOffline = 14,
-    ReceiveFifoOverflow = 15,
-    TransmitRetried = 16,
-    PeripheralReset = 17,
-    AlertAndLog = 18,
+    /// No more messages to transmit
+    TransmitIdle = 0,
+    /// The previous transmission was successful
+    Success = 1,
+    /// A frame has been received and added to the RX queue
+    Received = 2,
+    /// Both error counters have dropped below error warning limit
+    BelowErrorWarning = 3,
+    /// TWAI controller has become error active
+    ActiveError = 4,
+    /// TWAI controller is undergoing bus recovery
+    RecoveryInProgress = 5,
+    /// TWAI controller has successfully completed bus recovery
+    BusRecovered = 6,
+    /// The previous transmission lost arbitration
+    ArbLost = 7,
+    /// One of the error counters have exceeded the error warning limit
+    AboveErrorWarning = 8,
+    /// A (Bit, Stuff, CRC, Form, ACK) error has occurred on the bus
+    BusError = 9,
+    /// The previous transmission has failed (for single shot transmission)
+    TransmitFailed = 10,
+    /// The RX queue is full causing a frame to be lost
+    ReceiveQueueFull = 11,
+    /// TWAI controller has become error passive
+    ErrorPass = 12,
+    /// Bus-off condition occurred. TWAI controller can no longer influence bus
+    BusOffline = 13,
+    /// An RX FIFO overrun has occurred
+    ReceiveFifoOverflow = 14,
+    /// An message transmission was cancelled and retried due to an errata workaround
+    TransmitRetried = 15,
+    /// The TWAI controller was reset
+    PeripheralReset = 16,
+    /// In addition to alerting also Logs the event
+    AlertAndLog = 17,
 }
 
 /// CAN abstraction
-pub struct CanDriver<'d>(PeripheralRef<'d, CAN>, EnumSet<Alert>, bool);
+pub struct CanDriver<'d>(PhantomData<&'d mut ()>, EnumSet<Alert>, bool);
 
 impl<'d> CanDriver<'d> {
     pub fn new(
-        can: impl Peripheral<P = CAN> + 'd,
-        tx: impl Peripheral<P = impl OutputPin> + 'd,
-        rx: impl Peripheral<P = impl InputPin> + 'd,
+        _can: CAN<'d>,
+        tx: impl OutputPin + 'd,
+        rx: impl InputPin + 'd,
         config: &config::Config,
     ) -> Result<Self, EspError> {
-        crate::into_ref!(can, tx, rx);
-
         #[allow(clippy::needless_update)]
         let general_config = twai_general_config_t {
             mode: config.mode.into(),
-            tx_io: tx.pin(),
-            rx_io: rx.pin(),
+            tx_io: tx.pin() as _,
+            rx_io: rx.pin() as _,
             clkout_io: -1,
             bus_off_io: -1,
             tx_queue_len: config.tx_queue_len,
@@ -439,7 +430,7 @@ impl<'d> CanDriver<'d> {
 
         esp!(unsafe { twai_driver_install(&general_config, &timing_config, &filter_config) })?;
 
-        Ok(Self(can, config.alerts, config.tx_queue_len > 0))
+        Ok(Self(PhantomData, config.alerts, config.tx_queue_len > 0))
     }
 
     pub fn start(&mut self) -> Result<(), EspError> {
@@ -572,9 +563,9 @@ where
 
 impl<'d> AsyncCanDriver<'d, CanDriver<'d>> {
     pub fn new(
-        can: impl Peripheral<P = CAN> + 'd,
-        tx: impl Peripheral<P = impl OutputPin> + 'd,
-        rx: impl Peripheral<P = impl InputPin> + 'd,
+        can: CAN<'d>,
+        tx: impl OutputPin + 'd,
+        rx: impl InputPin + 'd,
         config: &config::Config,
     ) -> Result<Self, EspError> {
         Self::wrap(CanDriver::new(can, tx, rx, config)?)
